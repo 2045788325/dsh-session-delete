@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session Delete",
+    "description": "Adds a Delete Session row to each session's sidebar menu that permanently removes the session and its saved history."
+  }
+}
