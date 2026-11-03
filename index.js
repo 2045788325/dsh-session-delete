@@ -259,12 +259,23 @@ async function handleDelete(req, res, ctx) {
   }
 
   const runningBefore = ctx.get('agents')?.get(sessionId)?.status === 'running'
-  const removed = await removeSessionState(sessionId)
-  // The durable state is gone; now make this process forget the Session so the
-  // Harness stops listing it. A running Session is left alone (see below).
+  // Detach FIRST, for two reasons: the store entry is what makes
+  // `sessionController.list()` (and therefore the sidebar row) keep the Session,
+  // and on Windows a directory whose files are still open cannot be removed —
+  // the live Session holds `session.lock`, so tearing it down first is what
+  // releases the handle. A running Session is left alone (see below).
   const detached = runningBefore
     ? { live: true, detached: false, reason: 'running' }
     : await detachLiveSession(ctx, sessionId)
+  const errors = []
+  let removed = []
+  try {
+    removed = await removeSessionState(sessionId)
+  } catch (error) {
+    // Windows can still refuse a delete while another handle lingers; report it
+    // instead of pretending the Session is gone.
+    errors.push(error instanceof Error ? error.message : String(error))
+  }
   // A Session this process still holds live keeps its summary in
   // `sessionController.list()` after its files are gone, so the row survives
   // until the process ends; a Session that never stored anything (no prompt
@@ -280,6 +291,7 @@ async function handleDelete(req, res, ctx) {
     live: detached.live,
     running: detached.reason === 'running',
     detachReason: detached.reason,
+    errors,
   })
 }
 

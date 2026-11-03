@@ -26,6 +26,10 @@ window.__ModuleLoader__.load({
       'dialog.done': '“{title}” and its saved history were deleted.',
       'dialog.doneLive':
         '“{title}” was deleted, but this run still holds it because its turn is running. Stop it, then delete again.',
+      'dialog.doneRestart':
+        '“{title}” was deleted. If its row is still shown, restart Harness once to rebuild the list.',
+      'dialog.donePartial':
+        '“{title}” was removed from the list, but some files could not be deleted: {message}',
       'dialog.emptyTitle': 'Deleted',
       'dialog.running': 'This session is running. Stop it first, then delete it.',
       'dialog.failed': 'Delete failed: {message}',
@@ -45,6 +49,10 @@ window.__ModuleLoader__.load({
       'dialog.done': '「{title}」及其已保存的历史记录已删除。',
       'dialog.doneLive':
         '「{title}」已删除，但它的回合正在运行，本次运行仍会保留它。请先停止再删一次。',
+      'dialog.doneRestart':
+        '「{title}」已删除。如果列表里还能看到这一行，重启一次 DeepSeek Assistant 即可重建列表。',
+      'dialog.donePartial':
+        '「{title}」已从列表移除，但有文件没能删除：{message}',
       'dialog.emptyTitle': '已删除',
       'dialog.running': '该会话正在运行，请先停止后再删除。',
       'dialog.failed': '删除失败：{message}',
@@ -65,6 +73,7 @@ window.__ModuleLoader__.load({
 .sd-card{width:min(420px,100%);box-sizing:border-box;padding:20px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);box-shadow:0 16px 48px rgba(0,0,0,.28)}
 .sd-title{margin:0 0 8px;font-size:15px;font-weight:600;line-height:22px}
 .sd-body{margin:0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary);word-break:break-word}
+.sd-hint{margin:10px 0 0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
 .sd-error{margin:10px 0 0;font-size:12px;line-height:18px;color:var(--dsw-alias-state-error-primary)}
 .sd-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 .sd-button{appearance:none;font:inherit;font-size:13px;line-height:18px;padding:6px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary);cursor:pointer}
@@ -200,7 +209,7 @@ window.__ModuleLoader__.load({
       // idle → busy → done | error. `done` stays visible briefly so the user
       // sees the operation finish instead of watching the row vanish.
       const [phase, setPhase] = React.useState('idle')
-      const [outcome, setOutcome] = React.useState({ live: false })
+      const [outcome, setOutcome] = React.useState({ live: false, partial: null })
       const [error, setError] = React.useState(null)
       const cancelRef = React.useRef(null)
       const closeTimer = React.useRef(null)
@@ -246,12 +255,14 @@ window.__ModuleLoader__.load({
         setError(null)
         const result = await deleteSession(sessionId)
         if (result.ok) {
-          setOutcome({ live: result.live === true })
+          setOutcome({ live: result.live === true, partial: result.partial ?? null })
           setPhase('done')
-          // A Session that is no longer live is gone from the Host's list, so
-          // rebuild the sidebar instead of trusting cached summaries. A live one
-          // would come straight back, so leave the page alone in that case.
-          if (result.live !== true) {
+          // Rebuild the sidebar from the Host instead of trusting cached
+          // summaries. The reload is the only list-refresh path a plugin has, and
+          // it is unreliable on some shells (the Desktop app's custom protocol),
+          // so the settled message also tells the user what to do if the row
+          // survives.
+          if (result.live !== true && result.partial === undefined) {
             closeTimer.current = setTimeout(() => {
               closeTimer.current = null
               requests.close()
@@ -267,8 +278,15 @@ window.__ModuleLoader__.load({
       /** Heading for the settled state. */
       const doneHeadingKey = () => (outcome.live ? 'dialog.doneTitle' : 'dialog.emptyTitle')
 
-      /** Body for the settled state: a deletion, or the one case that stays live. */
-      const doneBodyKey = () => (outcome.live ? 'dialog.doneLive' : 'dialog.done')
+      /** Body for the settled state: a deletion, a partial one, or a still-live one. */
+      const doneBodyKey = () => {
+        if (outcome.partial !== null) return 'dialog.donePartial'
+        return outcome.live ? 'dialog.doneLive' : 'dialog.done'
+      }
+
+      /** Interpolation values for the settled body. */
+      const doneBodyValues = () =>
+        outcome.partial !== null ? { title, message: outcome.partial } : { title }
 
       return h(
         React.Fragment,
@@ -299,12 +317,15 @@ window.__ModuleLoader__.load({
               'p',
               { className: 'sd-body', role: 'status' },
               phase === 'done'
-                ? t(doneBodyKey(), { title })
+                ? t(doneBodyKey(), doneBodyValues())
                 : phase === 'busy'
                   ? t('dialog.pending')
                   : t('dialog.body', { title }),
             ),
             error !== null ? h('p', { className: 'sd-error', role: 'alert' }, error) : null,
+            phase === 'done' && outcome.partial === null && !outcome.live
+              ? h('p', { className: 'sd-hint' }, t('dialog.doneRestart', { title }))
+              : null,
             phase === 'done'
               ? null
               : h(
@@ -386,6 +407,10 @@ window.__ModuleLoader__.load({
             }
           }
 
+          const errors = Array.isArray(payload.errors) ? payload.errors : []
+          if (errors.length > 0) {
+            return { ok: true, live: true, partial: errors.join('; ') }
+          }
           if (payload.live === true) return { ok: true, live: true }
           return { ok: true, live: false }
         }
